@@ -1,0 +1,110 @@
+#подключение библиотек
+import win32com.client
+import pandas as pd
+import datetime as dt
+import configparser
+import traceback
+import time
+
+
+today = dt.date.today()
+year = today.year  # Объявление нынешнего года
+month = today.month  # Объявление нынешнего месяца
+monthstr = None
+if month != 10 or 11 or 12:
+    monthstr = '0' + str(month)
+day1 = 3  # int(input("Введите начало: "))
+day2 = 3  # int(input("Введите конец: "))
+begin = dt.datetime(year, month, day1)  # Формирование даты начала
+end = dt.datetime(year, month, day2+1)  # Формирование даты конца
+
+
+# Cправочник с конфигом.
+config = configparser.ConfigParser()
+config.read('settings.ini', 'utf-8')
+recipients = config['RECIPIENTS']['recipients']
+theme_l = config['LETTER']['theme']
+text_l = config['LETTER']['text']
+try:
+    # Функция получения данных из outlook
+    def get_calendar(begin, end):
+        outlook = win32com.client.Dispatch('Outlook.Application').GetNamespace('MAPI')
+        calendar = outlook.getDefaultFolder(9).Items
+        calendar.IncludeRecurrences = True
+        calendar.Sort('[Start]')
+        restriction = "[Start] >= '" + begin.strftime('%m/%d/%Y') + "' AND [END] <= '" + end.strftime('%m/%d/%Y') + "'"
+        calendar = calendar.Restrict(restriction)
+        return calendar
+
+    cal = get_calendar(begin, end)  # Применение функции с параметрами даты
+
+    # Цикл необходим, чтобы обрезать часовой пояс и преобразовать в текстовый формат
+    end_l = []  # Объявление списков
+    test_l = []
+    subject_l = []
+    body_l = []
+    i = 0
+    for c in cal:
+        end_f = dt.datetime.strptime(str(cal[i].end).rsplit('+00:00')[0], '%Y-%m-%d %H:%M:%S')
+        end_f = str(end_f)
+        end_l.append(end_f)
+        start_f = dt.datetime.strptime(str(cal[i].start).rsplit('+00:00')[0], '%Y-%m-%d %H:%M:%S')
+        start_f = str(start_f)
+        test_l.append(start_f)
+        subject_f = str(cal[i].subject)
+        subject_l.append(subject_f)
+        body_f = str(cal[i].body)
+        body_l.append(body_f)
+        i += 1
+
+    cal_subject = [app.subject for app in cal]  # Получение темы встречи из outlook
+    cal_body = [app.body for app in cal]  # Получение тела встречи из outlook
+
+    dict = {'Название работ': subject_l, 'Начало': test_l, 'Конец': end_l, 'Тело': body_l}  # Объявление словаря
+    df = pd.DataFrame.from_dict(dict, orient='index')
+    df = df.transpose()
+    result = df[df['Название работ'].str.contains('#plan|#work')]
+    writer = pd.ExcelWriter('meeting.xlsx')
+    result.to_excel(writer, sheet_name='Лист', index=False)
+
+    ac = []
+    i = 1
+    for r in result:
+        aa = result[i].tolist()
+        ag = aa.pop(3)
+        ab = '<br>'
+        ab.join(map(str, ag))
+        print(ag)
+        ac.append(ab)
+        i += 1
+    print(ac)
+
+
+    theme = theme_l + ' ' + str(day1) + '.' + monthstr + " - " + str(day2) + '.' + monthstr
+    nfo = '<span style="background-color: Yellow; display:inline-block;">По личным задачам (доп. задачам) сообщать статус мне в личное письмо (в alpha и sigma)<br><br></span>'
+    header = '<br>#2nfo<br>' + 'Время МСК<br>' + nfo
+    body = '<b>Ночь ' + str(day1) + '.' + monthstr + " - " + str(day1+1) + '.' + monthstr + '</b>(деж. )<br>'
+    ae = ' '.join(map(str, ac))
+    text = header + body + ae
+
+    def emailer():
+        outlook = win32com.client.Dispatch('Outlook.Application')
+        mail = outlook.CreateItem(0)
+        mail.To = recipients
+        mail.subject = theme
+        mail.HtmlBody = text
+        mail.Display(False)
+
+    # excel
+    for column in result:
+        column_width = max(result[column].astype(str).map(len).max(), len(column))
+        col_idx = result.columns.get_loc(column)
+        writer.sheets['Лист'].set_column(col_idx, col_idx, column_width)
+
+    writer.save()
+    emailer()
+
+except Exception as e:
+    print('Ошибка:\n', traceback.format_exc())
+print("Лог записан")
+time.sleep(30)
